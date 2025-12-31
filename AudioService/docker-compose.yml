@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  audio-service:
+    build:
+      context: .
+      dockerfile: AudioService/Dockerfile
+    container_name: audio-service
+    restart: unless-stopped
+    environment:
+      - DOTNET_ENVIRONMENT=Production
+      - DOTNET_RUNNING_IN_CONTAINER=true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Uncomment to mount volumes for configuration
+    # volumes:
+    #   - ./AudioService/appsettings.Production.json:/app/appsettings.Production.json
+    #   - ./data:/app/data
