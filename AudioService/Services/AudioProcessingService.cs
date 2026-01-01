@@ -27,8 +27,8 @@ public class AudioProcessingService : BackgroundService
         _logger.LogInformation("========== Audio Processing Service Starting ==========");
         _logger.LogInformation("Process started at {timestamp:O}", DateTime.UtcNow);
         
-        var processingInterval = _configuration.GetValue<int>("AudioService:ProcessingIntervalMinutes", 5);
-        _logger.LogInformation("Processing interval configured: {intervalMinutes} minutes", processingInterval);
+        var processingIntervalSeconds = _configuration.GetValue<int>("AudioService:ProcessingIntervalSeconds", 30);
+        _logger.LogInformation("Processing interval configured: {intervalSeconds} seconds", processingIntervalSeconds);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -46,8 +46,8 @@ public class AudioProcessingService : BackgroundService
                 _processCount++;
                 _logger.LogDebug("Processing cycle #{processNumber} completed successfully", _processCount);
 
-                _logger.LogInformation("Next processing in {intervalMinutes} minutes", processingInterval);
-                await Task.Delay(TimeSpan.FromMinutes(processingInterval), stoppingToken);
+                _logger.LogInformation("Next processing in {intervalSeconds} seconds", processingIntervalSeconds);
+                await Task.Delay(TimeSpan.FromSeconds(processingIntervalSeconds), stoppingToken);
             }
             catch (OperationCanceledException)
             {
