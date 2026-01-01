@@ -1,4 +1,4 @@
-namespace AudioService;
+namespace AudioService.Services;
 
 public interface ITaskProcessor
 {
