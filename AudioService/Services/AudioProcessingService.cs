@@ -1,3 +1,4 @@
+using Confluent.Kafka;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -13,7 +14,7 @@ public class AudioProcessingService : BackgroundService
     private int _errorCount = 0;
 
     public AudioProcessingService(
-        ILogger<AudioProcessingService> logger, 
+        ILogger<AudioProcessingService> logger,
         IServiceProvider serviceProvider,
         IConfiguration configuration)
     {
@@ -26,51 +27,83 @@ public class AudioProcessingService : BackgroundService
     {
         _logger.LogInformation("========== Audio Processing Service Starting ==========");
         _logger.LogInformation("Process started at {timestamp:O}", DateTime.UtcNow);
-        
-        var processingIntervalSeconds = _configuration.GetValue<int>("AudioService:ProcessingIntervalSeconds", 30);
-        _logger.LogInformation("Processing interval configured: {intervalSeconds} seconds", processingIntervalSeconds);
 
-        while (!stoppingToken.IsCancellationRequested)
+        var kafkaBootstrapServers = _configuration.GetValue<string>("Kafka:BootstrapServers", "localhost:9092");
+        var kafkaTopic = _configuration.GetValue<string>("Kafka:Topic", "audio.analyze.requested");
+        var kafkaGroupId = _configuration.GetValue<string>("Kafka:GroupId", "audio-processing-group");
+
+        _logger.LogInformation("Kafka configured - Bootstrap Servers: {servers}, Topic: {topic}, GroupId: {groupId}",
+            kafkaBootstrapServers, kafkaTopic, kafkaGroupId);
+
+        var config = new ConsumerConfig
         {
+            BootstrapServers = kafkaBootstrapServers,
+            GroupId = kafkaGroupId,
+            AutoOffsetReset = AutoOffsetReset.Earliest,
+            EnableAutoCommit = true,
+            StatisticsIntervalMs = 5000
+        };
+
+        using (var consumer = new ConsumerBuilder<string, string>(config)
+            .SetErrorHandler((_, e) =>
+            {
+                _logger.LogError("Kafka consumer error: {error}", e.Reason);
+            })
+            .SetStatisticsHandler((_, json) =>
+            {
+                //_logger.LogDebug("Kafka consumer statistics: {stats}", json);
+            })
+            .Build())
+        {
+            consumer.Subscribe(kafkaTopic);
+            _logger.LogInformation("Subscribed to Kafka topic: {topic}", kafkaTopic);
+
             try
             {
-                _logger.LogDebug("Processing cycle #{processNumber} starting", _processCount + 1);
-                
-                // Create a scope for each iteration to properly dispose resources
-                using (var scope = _serviceProvider.CreateScope())
+                while (!stoppingToken.IsCancellationRequested)
                 {
-                    var taskProcessor = scope.ServiceProvider.GetRequiredService<ITaskProcessor>();
-                    await taskProcessor.ProcessAsync(stoppingToken);
-                }
-                
-                _processCount++;
-                _logger.LogDebug("Processing cycle #{processNumber} completed successfully", _processCount);
+                    try
+                    {
+                        var consumeResult = consumer.Consume(stoppingToken);
 
-                _logger.LogInformation("Next processing in {intervalSeconds} seconds", processingIntervalSeconds);
-                await Task.Delay(TimeSpan.FromSeconds(processingIntervalSeconds), stoppingToken);
+                        if (consumeResult.IsPartitionEOF)
+                        {
+                            _logger.LogDebug("Reached end of partition: {partition} at offset {offset}",
+                                consumeResult.Partition, consumeResult.Offset);
+                            continue;
+                        }
+
+                        _logger.LogDebug("Message received from topic {topic} partition {partition} at offset {offset}: {value}",
+                            consumeResult.Topic, consumeResult.Partition, consumeResult.Offset, consumeResult.Message.Value);
+
+                        using (var scope = _serviceProvider.CreateScope())
+                        {
+                            var taskProcessor = scope.ServiceProvider.GetRequiredService<ITaskProcessor>();
+                            await taskProcessor.ProcessAsync(stoppingToken);
+                        }
+
+                        _processCount++;
+                        _logger.LogDebug("Processing cycle #{processNumber} completed successfully", _processCount);
+                    }
+                    catch (ConsumeException ex)
+                    {
+                        _errorCount++;
+                        _logger.LogError(ex, "Kafka consume error (Error #{errorCount}): {error}", _errorCount, ex.Error.Reason);
+                    }
+                    catch (Exception ex)
+                    {
+                        _errorCount++;
+                        _logger.LogError(ex, "Error processing message (Error #{errorCount})", _errorCount);
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
                 _logger.LogInformation("Audio Processing Service cancellation requested");
-                break;
             }
-            catch (Exception ex)
+            finally
             {
-                _errorCount++;
-                _logger.LogError(ex, "Error in Audio Processing Service (Error #{errorCount})", _errorCount);
-                
-                var retryDelaySeconds = _configuration.GetValue<int>("AudioService:RetryDelaySeconds", 30);
-                _logger.LogWarning("Retrying after {retryDelaySeconds} seconds...", retryDelaySeconds);
-                
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds), stoppingToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    _logger.LogInformation("Retry delay cancelled");
-                    break;
-                }
+                consumer.Close();
             }
         }
 
