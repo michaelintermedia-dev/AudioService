@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
 
 namespace AudioService.Services;
@@ -7,11 +8,13 @@ public class TaskProcessor : ITaskProcessor
 {
     private readonly ILogger<TaskProcessor> _logger;
     private readonly HttpClient _httpClient;
+    private readonly IProducer<string, string> _kafkaProducer;
 
-    public TaskProcessor(ILogger<TaskProcessor> logger, HttpClient httpClient)
+    public TaskProcessor(ILogger<TaskProcessor> logger, HttpClient httpClient, IProducer<string, string> kafkaProducer)
     {
         _logger = logger;
         _httpClient = httpClient;
+        _kafkaProducer = kafkaProducer;
     }
 
     public async Task ProcessAsync(CancellationToken cancellationToken, string fileName)
@@ -55,34 +58,10 @@ public class TaskProcessor : ITaskProcessor
                 _logger.LogWarning("  >> Uploads directory not found: {path}", uploadsPath);
                 return;
             }
-            var filePath =Path.Combine(uploadsPath, fileName);
-            await SendFileForTranscription(filePath, transcribeUrl, cancellationToken);
-
-            //var audioFiles = Directory.GetFiles(uploadsPath, "*.*")
-            //    .Where(f => IsAudioFile(f))
-            //    .ToArray();
-
-            //_logger.LogInformation("  >> Found {count} audio files to process", audioFiles.Length);
-
-            //foreach (var filePath in audioFiles)
-            //{
-            //    if (cancellationToken.IsCancellationRequested)
-            //    {
-            //        _logger.LogWarning("  >> Audio processing cancelled");
-            //        break;
-            //    }
-
-            //    try
-            //    {
-            //        _logger.LogInformation("  >> Processing file: {file}", Path.GetFileName(filePath));
-            //        //await SendFileForTranscription(filePath, transcribeUrl, cancellationToken);
-            //        _logger.LogInformation("  >> Successfully sent file for transcription: {file}", Path.GetFileName(filePath));
-            //    }
-            //    catch (Exception ex)
-            //    {
-            //        _logger.LogError(ex, "  >> Error processing file: {file}", Path.GetFileName(filePath));
-            //    }
-            //}
+            var filePath = Path.Combine(uploadsPath, fileName);
+            var transcriptionResponse = await SendFileForTranscription(filePath, transcribeUrl, cancellationToken);
+            
+            await PublishProcessingNotification(fileName, "success", transcriptionResponse, cancellationToken);
 
             _logger.LogInformation("  >> Audio processing routine completed at {time:O}", DateTime.UtcNow);
         }
@@ -98,7 +77,7 @@ public class TaskProcessor : ITaskProcessor
         }
     }
 
-    private async Task SendFileForTranscription(string filePath, string transcribeUrl, CancellationToken cancellationToken)
+    private async Task<string> SendFileForTranscription(string filePath, string transcribeUrl, CancellationToken cancellationToken)
     {
         using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
         {
@@ -112,12 +91,44 @@ public class TaskProcessor : ITaskProcessor
                 var response = await _httpClient.PostAsync(transcribeUrl, content, cancellationToken);
                 response.EnsureSuccessStatusCode();
 
-
                 var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
 
                 _logger.LogDebug("  >> Transcription response status: {statusCode}", response.StatusCode);
                 _logger.LogDebug("  >> Transcription responseBody: {responseBody}", responseBody);
+                
+                return responseBody;
             }
+        }
+    }
+
+    private async Task PublishProcessingNotification(string fileName, string status, string transcriptionData, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var notificationMessage = new
+            {
+                fileName,
+                status,
+                processedAt = DateTime.UtcNow,
+                transcriptionData
+            };
+
+            var jsonMessage = System.Text.Json.JsonSerializer.Serialize(notificationMessage);
+            
+            var kafkaMessage = new Message<string, string>
+            {
+                Key = fileName,
+                Value = jsonMessage
+            };
+
+            await _kafkaProducer.ProduceAsync("audio.analyze.completed", kafkaMessage, cancellationToken);
+            
+            _logger.LogInformation("  >> Kafka notification published for file: {fileName}", fileName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "  >> Failed to publish Kafka notification for file: {fileName}", fileName);
+            throw;
         }
     }
 
