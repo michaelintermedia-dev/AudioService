@@ -1,3 +1,4 @@
+using AudioService.Models;
 using Confluent.Kafka;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
@@ -72,14 +73,15 @@ public class AudioProcessingService : BackgroundService
                                 consumeResult.Partition, consumeResult.Offset);
                             continue;
                         }
-
                         _logger.LogDebug("Message received from topic {topic} partition {partition} at offset {offset}: {value}",
                             consumeResult.Topic, consumeResult.Partition, consumeResult.Offset, consumeResult.Message.Value);
+
+                        var message = System.Text.Json.JsonSerializer.Deserialize<MessagePayload>(consumeResult.Message.Value, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
                         using (var scope = _serviceProvider.CreateScope())
                         {
                             var taskProcessor = scope.ServiceProvider.GetRequiredService<ITaskProcessor>();
-                            await taskProcessor.ProcessAsync(stoppingToken);
+                            await taskProcessor.ProcessAsync(stoppingToken, message.FilePath);
                         }
 
                         _processCount++;

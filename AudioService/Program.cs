@@ -1,9 +1,14 @@
 using AudioService.Services;
+using Microsoft.Extensions.DependencyInjection; // Add this using directive
 
 var builder = Host.CreateDefaultBuilder(args)
     .ConfigureServices(services =>
     {
-        services.AddScoped<ITaskProcessor, TaskProcessor>();
+        services.AddHttpClient<ITaskProcessor, TaskProcessor>()
+            .ConfigureHttpClient(client =>
+            {
+                client.Timeout = TimeSpan.FromMinutes(5);
+            });
         services.AddHostedService<AudioProcessingService>();
     });
 
